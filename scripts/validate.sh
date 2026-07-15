@@ -12,6 +12,7 @@ cleanup() {
 trap cleanup EXIT
 cleanup
 
+docker compose -f "$COMPOSE_FILE" build migrations
 docker compose -f "$COMPOSE_FILE" up -d postgres
 docker compose -f "$COMPOSE_FILE" run --rm migrations migrate
 docker compose -f "$COMPOSE_FILE" run --rm migrations migrate

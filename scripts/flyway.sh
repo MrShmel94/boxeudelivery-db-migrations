@@ -10,4 +10,5 @@ if [ "$#" -eq 0 ]; then
   set -- info
 fi
 
+docker compose build migrations
 docker compose run --rm migrations "$@"

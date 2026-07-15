@@ -1,6 +1,6 @@
 # Box EU Delivery Database Migrations
 
-Independent Flyway deployment unit for the Box EU Delivery CRM database. It is kept in the product's root Git repository so migrations, backend mappings, API contracts, and knowledge can change atomically.
+Independent Flyway deployment unit and Git repository for the Box EU Delivery CRM database. Backend mappings and migration contracts evolve in separate repositories, so compatible revisions and deployment order must be coordinated explicitly.
 
 ## Boundaries
 
@@ -9,19 +9,26 @@ Independent Flyway deployment unit for the Box EU Delivery CRM database. It is k
 - Every correction is a new migration version.
 - Controlled reference data belongs only in repeatable SQL under `fixtures/`.
 - Plaintext passwords, real accounts, personal data, and environment secrets never belong in migrations or fixtures.
-- Account foreign keys do not cascade physical deletion; account deletion/archival requires an explicit future business rule.
+- Account foreign keys do not cascade physical deletion; the current lifecycle exposes disable/reactivate rather than physical deletion.
+- Application tables currently share one `crm` schema. A new PostgreSQL schema requires a concrete isolation, ownership, permissions, or lifecycle reason; schemas are not created per entity.
+- Flyway's technical history table remains in `public`; no business tables are stored there.
 - Flyway runs before the backend; Hibernate only validates the resulting schema.
 
 ## Current Schema
 
-`V1__create_accounts_schema.sql` creates:
+`V1__create_crm_schema_and_account_foundation.sql` creates the initial tables in the shared `crm` application schema:
 
-- `accounts.account` for account profile and lifecycle data;
-- `accounts.password_credential` for password hashes and mandatory-password-change state;
-- `accounts.account_category` for the optional `EMPLOYEE`, `SUPPLIER`, or `CLIENT` classification;
-- `accounts.access_role` and `accounts.account_access_role` so authorization remains separate from business category.
+- `crm.account` for account profile and lifecycle data;
+- `crm.password_credential` for password hashes and mandatory-password-change state;
+- `crm.account_category` for the optional `EMPLOYEE`, `SUPPLIER`, or `CLIENT` classification;
+- `crm.access_role` for predefined role definitions whose identity includes `GLOBAL` or `PROJECT` scope;
+- `crm.account_global_role` for platform-wide role assignments only.
 
-The repeatable fixture provides the three confirmed category codes and the confirmed `ADMIN` access role. No account is seeded. The existing secret-configured bootstrap administrator remains the controlled entry point for the first real administrator.
+`V2__complete_account_lifecycle.sql` adds account disable metadata, credential security versions, email-delivery metadata, hashed single-use password-reset tokens, durable audit events, and database constraints for the fixed role catalogue. `V3__align_password_reset_token_hash_type.sql` is the immutable follow-up that aligns the token hash mapping without editing an already-applied migration.
+
+The repeatable fixture reconciles the three category codes and the exact role definitions. Global scope contains all thirteen roles: `OWNER`, `CRM_ADMIN`, `OPERATIONS_MANAGER`, `CUSTOMER_MANAGER`, `BUYER`, `LOGISTICS_SPECIALIST`, `WAREHOUSE_OPERATOR`, `CASHIER`, `COURIER`, `ACCOUNTANT`, `FINANCIAL_CONTROLLER`, `SUPPLIER`, and `CUSTOMER`. Project scope contains the eleven operational roles and excludes `OWNER` and `CRM_ADMIN`. No account is seeded. The secret-configured bootstrap owner remains the controlled entry point for the first persistent owner.
+
+Project membership and project-role assignment will be introduced together with the project aggregate. The intended relational shape is `project_member` plus `project_member_role`, with a composite foreign key back to the membership and a project-scoped role definition. A generic nullable `scope_id` assignment is intentionally avoided because it cannot enforce ownership with strong foreign keys.
 
 ## Local Migration
 
@@ -70,10 +77,8 @@ At deployment time, provide `FLYWAY_URL`, `FLYWAY_USER`, and `FLYWAY_PASSWORD`. 
 
 ## Intentionally Deferred
 
-- account HTTP endpoints and JPA mappings;
-- the detailed permission matrix beyond `ADMIN`;
-- temporary-password lifetime and delivery channel;
-- email-based password recovery and notifications;
+- project-operation permission mapping and role-combination rules;
+- durable email retry/dead-letter and provider feedback processing;
 - project, task, participant, subtask, and chat schemas.
 
 Those contracts will be added as small coordinated slices instead of being guessed in the first migration.

@@ -1,0 +1,27 @@
+name: boxeudelivery-db-validation
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:17.10-alpine}
+    environment:
+      POSTGRES_DB: boxeudelivery_validation
+      POSTGRES_USER: boxeudelivery
+      POSTGRES_PASSWORD: validation-only
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U boxeudelivery -d boxeudelivery_validation"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  migrations:
+    build:
+      context: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      FLYWAY_URL: jdbc:postgresql://postgres:5432/boxeudelivery_validation
+      FLYWAY_USER: boxeudelivery
+      FLYWAY_PASSWORD: validation-only

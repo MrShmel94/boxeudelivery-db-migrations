@@ -1,0 +1,12 @@
+name: boxeudelivery-db-migrations
+
+services:
+  migrations:
+    build:
+      context: .
+    environment:
+      FLYWAY_URL: ${FLYWAY_URL:-jdbc:postgresql://host.docker.internal:55432/boxeudelivery}
+      FLYWAY_USER: ${FLYWAY_USER:-boxeudelivery}
+      FLYWAY_PASSWORD: ${FLYWAY_PASSWORD:-local-boxeudelivery}
+    extra_hosts:
+      - host.docker.internal:host-gateway

@@ -493,6 +493,7 @@ ALTER TABLE crm.cargo_audit_event
             'CARGO_PHOTO',
             'CARGO_FINANCIAL_ENTRY',
             'CARGO_PURCHASE_RATE',
+            'CARGO_USER_DAILY_RATE',
             'CUSTOMER_ORDER',
             'CUSTOMER_ORDER_LINE',
             'PICKING_SESSION',

@@ -70,7 +70,7 @@ ALTER TABLE crm.cargo_item_purchase_rate_snapshot
         FOREIGN KEY (user_daily_rate_snapshot_id)
             REFERENCES crm.cargo_user_daily_purchase_rate_snapshot (id) ON DELETE RESTRICT;
 
--- Reuse pre-V23 history only when one account used exactly one value for the
+-- Reuse pre-V22 history only when one account used exactly one value for the
 -- same date and directed pair. Conflicting legacy values remain unlinked
 -- instead of silently selecting an arbitrary canonical rate.
 WITH consistent_legacy_rate AS (
@@ -82,7 +82,7 @@ WITH consistent_legacy_rate AS (
            MIN(rate.created_at) AS created_at
     FROM crm.cargo_item_purchase_rate_snapshot rate
     JOIN crm.account account
-      ON 'account:' || account.id::TEXT = rate.created_by_subject
+      ON account.id::TEXT = rate.created_by_subject
     WHERE rate.active
     GROUP BY account.id,
              rate.effective_on,
@@ -120,7 +120,7 @@ WITH consistent_legacy_rate AS (
            NULL,
            NULL,
            TRUE,
-           'account:' || account_id::TEXT,
+           account_id::TEXT,
            created_at
     FROM consistent_legacy_rate
     RETURNING id,
@@ -133,7 +133,7 @@ WITH consistent_legacy_rate AS (
 UPDATE crm.cargo_item_purchase_rate_snapshot item_rate
 SET user_daily_rate_snapshot_id = daily_rate.id
 FROM inserted_daily_rate daily_rate
-WHERE item_rate.created_by_subject = 'account:' || daily_rate.account_id::TEXT
+WHERE item_rate.created_by_subject = daily_rate.account_id::TEXT
   AND item_rate.effective_on = daily_rate.effective_on
   AND item_rate.base_currency_code = daily_rate.base_currency_code
   AND item_rate.quote_currency_code = daily_rate.quote_currency_code
@@ -159,12 +159,11 @@ ALTER TABLE crm.cargo_audit_event
             'CUSTOMER_ORDER',
             'CUSTOMER_ORDER_LINE',
             'PICKING_SESSION',
-            'OUTBOUND_PACKAGE',
-            'OUTBOUND_DELIVERY'
+            'OUTBOUND_PACKAGE'
         ));
 
 COMMENT ON TABLE crm.cargo_user_daily_purchase_rate_snapshot IS
     'Immutable user-scoped daily directed rate preferences. One active value exists per account, date, and currency pair.';
 
 COMMENT ON COLUMN crm.cargo_item_purchase_rate_snapshot.user_daily_rate_snapshot_id IS
-    'Exact user daily-rate revision reused by this immutable item purchase-rate snapshot. Null is retained only for pre-V23 history.';
+    'Exact user daily-rate revision reused by this immutable item purchase-rate snapshot. Null is retained only for pre-V22 history.';

@@ -46,7 +46,15 @@ Independent Flyway deployment unit and Git repository for the Box EU Delivery CR
 
 `V14__add_supplier_goods_pre_shipment_flow.sql` separates supplier-held goods from inbound delivery. It adds reusable supplier-owned descriptions, immutable supplier ownership on every physical unit, optional exact-customer assignment, pre-shipment item states, draft reservation, explicit dispatch, and controlled cancellation. Existing declared deliveries are backfilled as already `IN_TRANSIT`; restrictive composite foreign keys prevent cross-project or cross-supplier assignment.
 
-The repeatable fixture reconciles the three category codes and the exact role definitions. Global scope contains all thirteen roles: `OWNER`, `CRM_ADMIN`, `OPERATIONS_MANAGER`, `CUSTOMER_MANAGER`, `BUYER`, `LOGISTICS_SPECIALIST`, `WAREHOUSE_OPERATOR`, `CASHIER`, `COURIER`, `ACCOUNTANT`, `FINANCIAL_CONTROLLER`, `SUPPLIER`, and `CUSTOMER`. Project scope contains the eleven operational roles and excludes `OWNER` and `CRM_ADMIN`. No account is seeded. The secret-configured bootstrap owner remains the controlled entry point for the first persistent owner.
+`V17__align_cargo_financial_currency_type.sql` aligns both current and revision financial currency codes with their original Hibernate `VARCHAR(3)` mappings without editing the already-applied `V16` migration. Existing three-letter values are trimmed during the type conversion. Its temporary closed checks are replaced by catalogue foreign keys in `V19`.
+
+`V18__align_pickup_point_country_code_type.sql` aligns the pickup-point ISO country code with its Hibernate `VARCHAR(2)` mapping. Existing fixed-width values are trimmed during conversion, and the database check continues to require exactly two uppercase ASCII letters.
+
+`V19__add_currency_catalog_and_purchase_rate_snapshots.sql` replaces closed finance-currency checks with restrictive foreign keys to the system-managed `crm.currency_definition` catalogue, adds the purchase-effective date to current entries and immutable revisions, and creates directed supplier purchase-rate snapshots with explicit base/quote orientation and a restrictive link to the exact confirmed purchase-cost revision. Corrections append a reasoned successor and deactivate only the prior lifecycle flag; prior rate values remain immutable. The versioned migration inserts the initial catalogue before adding foreign keys so existing finance rows migrate atomically, while `R__02_currency_reference_data.sql` remains the authoritative repeatable reconciliation for `USD`, `EUR`, `PLN`, `RUB`, and `CNY`.
+
+`V23__add_user_daily_purchase_rates.sql` adds immutable account-scoped daily purchase-rate snapshots with one active value per date and directed pair, links every new item-rate snapshot to the exact reused daily revision, and preserves pre-V23 item rows through a nullable historical link. The migration backfills only legacy account/date/pair groups whose active values are identical; conflicting legacy rates remain unlinked rather than selecting an arbitrary canonical value. Daily correction appends a reasoned successor and leaves previously linked item snapshots unchanged.
+
+The repeatable fixtures reconcile account categories, exact role definitions, and the active currency catalogue. Global scope contains all thirteen roles: `OWNER`, `CRM_ADMIN`, `OPERATIONS_MANAGER`, `CUSTOMER_MANAGER`, `BUYER`, `LOGISTICS_SPECIALIST`, `WAREHOUSE_OPERATOR`, `CASHIER`, `COURIER`, `ACCOUNTANT`, `FINANCIAL_CONTROLLER`, `SUPPLIER`, and `CUSTOMER`. Project scope contains the eleven operational roles and excludes `OWNER` and `CRM_ADMIN`. No account is seeded. The secret-configured bootstrap owner remains the controlled entry point for the first persistent owner.
 
 Project membership and project-role assignment use `project_member` plus `project_member_role`. A generic nullable `scope_id` assignment is intentionally avoided because it cannot enforce ownership with strong foreign keys. No project, account, membership, role, task, warehouse, project-warehouse assignment, audit, or outbox foreign key performs cascade deletion.
 
@@ -64,13 +72,24 @@ Optionally create local overrides:
 cp .env.example .env
 ```
 
-Inspect, migrate, and validate:
+Apply all pending migrations. Running the local wrapper without arguments is
+intentionally equivalent to `migrate`:
+
+```bash
+./scripts/flyway.sh
+```
+
+Inspect, migrate explicitly, and validate:
 
 ```bash
 ./scripts/flyway.sh info
 ./scripts/flyway.sh migrate
 ./scripts/flyway.sh validate
 ```
+
+`info` is read-only: it reports `Pending` migrations but does not apply them.
+The wrapper rebuilds the local migration image before every command, so newly
+created SQL files are included immediately.
 
 The defaults target the backend's local PostgreSQL port. Production and shared environments must provide the connection values through runtime secrets.
 

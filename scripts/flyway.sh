@@ -7,7 +7,7 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_DIR"
 
 if [ "$#" -eq 0 ]; then
-  set -- info
+  set -- migrate
 fi
 
 docker compose build migrations

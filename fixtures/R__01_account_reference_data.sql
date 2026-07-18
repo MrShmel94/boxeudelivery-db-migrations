@@ -1,7 +1,8 @@
 INSERT INTO crm.account_category (code, active, sort_order)
 VALUES ('EMPLOYEE', TRUE, 10),
        ('SUPPLIER', TRUE, 20),
-       ('CLIENT', TRUE, 30)
+       ('CLIENT', TRUE, 30),
+       ('COURIER', TRUE, 40)
 ON CONFLICT (code) DO UPDATE
     SET active = EXCLUDED.active,
         sort_order = EXCLUDED.sort_order,

@@ -12,6 +12,9 @@ ALTER TABLE crm.conversation
 ALTER INDEX crm.ix_task_conversation_project
     RENAME TO ix_conversation_project;
 
+ALTER TABLE crm.chat_attachment
+    DROP CONSTRAINT fk_chat_attachment_message;
+
 ALTER TABLE crm.chat_message
     DROP CONSTRAINT fk_chat_message_context_task,
     DROP CONSTRAINT uq_chat_message_id_context_conversation,
@@ -22,7 +25,6 @@ ALTER TABLE crm.chat_message
 
 ALTER TABLE crm.chat_attachment
     DROP CONSTRAINT fk_chat_attachment_context_task,
-    DROP CONSTRAINT fk_chat_attachment_message,
     ALTER COLUMN context_task_id DROP NOT NULL,
     ADD CONSTRAINT fk_chat_attachment_context_task
         FOREIGN KEY (context_task_id, conversation_id)

@@ -62,6 +62,8 @@ Independent Flyway deployment unit and Git repository for the Box EU Delivery CR
 
 `V65__index_owner_daily_customer_fx_suggestions.sql` adds partial owner-scoped indexes for the latest customer FX quote on the same purchase date and directed currency pair. These indexes support confidential backend suggestions without turning the suggested values into a global daily financial fact.
 
+`V66__add_border_tariff_actual_cost.sql` adds a nullable internal transport cost to each versioned tariff subcategory value and snapshots the policy amount plus generated exact-item financial entry in every new tariff calculation. Historical published policies remain readable without an invented cost, while newly completed drafts provide the initial `BORDER_TRANSPORT_ACTUAL_COST` for each materialized physical unit.
+
 The repeatable fixtures reconcile account categories, exact role definitions, and the active currency catalogue. Global scope contains all thirteen roles: `OWNER`, `CRM_ADMIN`, `OPERATIONS_MANAGER`, `CUSTOMER_MANAGER`, `BUYER`, `LOGISTICS_SPECIALIST`, `WAREHOUSE_OPERATOR`, `CASHIER`, `COURIER`, `ACCOUNTANT`, `FINANCIAL_CONTROLLER`, `SUPPLIER`, and `CUSTOMER`. Project scope contains the eleven operational roles and excludes `OWNER` and `CRM_ADMIN`. No account is seeded. The secret-configured bootstrap owner remains the controlled entry point for the first persistent owner.
 
 Project membership and project-role assignment use `project_member` plus `project_member_role`. A generic nullable `scope_id` assignment is intentionally avoided because it cannot enforce ownership with strong foreign keys. No project, account, membership, role, task, warehouse, project-warehouse assignment, audit, or outbox foreign key performs cascade deletion.

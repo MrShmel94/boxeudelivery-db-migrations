@@ -28,10 +28,26 @@ SEVERITIES = 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL'
 def run(args, *, cwd=ROOT, capture=False, accepted=(0,)):
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith(('TRIVY_', 'GITLEAKS_', 'SEMGREP_'))}
-    result = subprocess.run([str(x) for x in args], cwd=cwd, text=True,
-                            env=environment,
-                            stdout=subprocess.PIPE if capture else None,
-                            stderr=subprocess.PIPE if capture else None)
+    cache_lock = None
+    try:
+        if Path(str(args[0])).name == 'trivy':
+            # Trivy's filesystem cache permits one process at a time. Different
+            # repository hooks must not race and produce cache-lock failures.
+            shared = Path.home() / '.cache/boxeu-security'
+            shared.mkdir(parents=True, exist_ok=True, mode=0o700)
+            cache_lock = (shared / 'trivy.lock').open('a')
+            try:
+                fcntl.flock(cache_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print('Waiting for another BoxEU Trivy scan to release its cache...', flush=True)
+                fcntl.flock(cache_lock, fcntl.LOCK_EX)
+        result = subprocess.run([str(x) for x in args], cwd=cwd, text=True,
+                                env=environment,
+                                stdout=subprocess.PIPE if capture else None,
+                                stderr=subprocess.PIPE if capture else None)
+    finally:
+        if cache_lock:
+            cache_lock.close()
     if result.returncode not in accepted:
         # Scanner output can contain source/secrets. Keep captured output private.
         if capture:
@@ -123,7 +139,112 @@ def secret_scan(source, report, *, revision=None):
     return len(findings)
 
 
+def build_image(source, image, tag):
+    args = ['docker', 'build', '--pull', '--platform=linux/amd64', '--tag', tag,
+            '--file', source / image['dockerfile']]
+    for key, value in image.get('build_args', {}).items():
+        args += ['--build-arg', f'{key}={value}']
+    run([*args, source / image['context']])
+
+
+def json_messages(value):
+    decoder = json.JSONDecoder()
+    messages = []
+    value = value.lstrip()
+    while value:
+        item, length = decoder.raw_decode(value)
+        messages.append(item)
+        value = value[length:].lstrip()
+    return messages
+
+
+def verify_openpgp_absent(target, binary_path, version, destination):
+    """Fresh, artifact-bound package absence evidence for GO-2026-5932 only."""
+    image_id = run(['docker', 'image', 'inspect', '--format', '{{.Id}}', target], capture=True).stdout.strip()
+    if not re.fullmatch(r'sha256:[a-f0-9]{64}', image_id):
+        raise RuntimeError('Go package verification requires an immutable local image')
+    destination.mkdir(parents=True, exist_ok=True)
+    for name in ('inventory.json', 'govulncheck.json', 'proof.json'):
+        (destination / name).unlink(missing_ok=True)
+    recipe = ROOT / 'security/govulncheck.Dockerfile'
+    pin = read_json(ROOT / 'security/toolchain.json')['govulncheck']
+    if hashlib.sha256(recipe.read_bytes()).hexdigest() != pin['dockerfile_sha256']:
+        raise RuntimeError('Go verifier recipe checksum mismatch')
+    tool_tag = 'boxeu-security/govulncheck:' + pin['dockerfile_sha256'][:16]
+    run(['docker', 'build', '--pull', '--platform=linux/amd64', '--tag', tool_tag,
+         '--file', recipe, recipe.parent], capture=True)
+    tool_id = run(['docker', 'image', 'inspect', '--format', '{{.Id}}', tool_tag], capture=True).stdout.strip()
+    with tempfile.TemporaryDirectory(prefix='boxeu-go-binary-') as directory:
+        temporary = Path(directory)
+        container = run(['docker', 'create', '--network=none', '--entrypoint', '/bin/false', image_id], capture=True).stdout.strip()
+        try:
+            name = Path(binary_path).name
+            run(['docker', 'cp', f'{container}:{binary_path}', temporary / 'binary'], capture=True)
+            for suffix in ('packages', 'sha256'):
+                run(['docker', 'cp', f'{container}:/usr/share/boxeu-security/{name}.{suffix}',
+                     temporary / suffix], capture=True)
+        finally:
+            run(['docker', 'rm', container], capture=True, accepted=(0, 1))
+        fingerprint = hashlib.sha256((temporary / 'binary').read_bytes()).hexdigest()
+        if (temporary / 'sha256').read_text().split()[0] != fingerprint:
+            raise RuntimeError('Compiler package receipt does not match the scanned Go binary')
+        packages = set((temporary / 'packages').read_text().splitlines())
+        if 'runtime' not in packages or len(packages) < 2:
+            raise RuntimeError('Compiler package receipt is incomplete')
+        if any(p == 'golang.org/x/crypto/openpgp' or p.startswith('golang.org/x/crypto/openpgp/') for p in packages):
+            return None
+        base = ['docker', 'run', '--rm', '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
+                '--memory=1g', '--pids-limit=128', '--tmpfs', '/tmp:rw,nosuid,size=128m',
+                '--user', f'{os.getuid()}:{os.getgid()}', '-e', 'HOME=/tmp',
+                '-v', f'{temporary / "binary"}:/binary:ro']
+        inventory_output = run([*base, '--network=none', tool_id, '-mode=extract', '/binary'], capture=True).stdout
+        (destination / 'inventory.json').write_text(inventory_output)
+        inventory = json_messages(inventory_output)
+        if len(inventory) != 2 or inventory[0] != {'name': 'govulncheck-extract', 'version': '0.1.0'}:
+            raise RuntimeError('Unsupported Go binary inventory protocol')
+        body = inventory[1]
+        symbols = body.get('pkgSymbols')
+        if not symbols or body.get('goos') != 'linux' or body.get('path') not in packages:
+            raise RuntimeError('Go verifier did not extract a complete Linux binary inventory')
+        modules = body.get('modules', [])
+        if not any(m['Path'] == 'golang.org/x/crypto' and m['Version'] == version for m in modules):
+            raise RuntimeError('Go binary crypto version differs from the dependency finding')
+        if any(s.get('pkg', '').startswith('golang.org/x/crypto/openpgp') for s in symbols):
+            return None
+        output = run([*base, '-e', 'GOVULNDB=https://vuln.go.dev', tool_id,
+                      '-mode=binary', '-scan=package', '-json', '/binary'], capture=True).stdout
+        (destination / 'govulncheck.json').write_text(output)
+        messages = json_messages(output)
+        config = next((m['config'] for m in messages if 'config' in m), {})
+        if (config.get('scanner_version') != 'v' + pin['version'] or config.get('scan_level') != 'package'
+                or config.get('scan_mode') != 'binary' or config.get('db') != 'https://vuln.go.dev'):
+            raise RuntimeError('Unexpected Go vulnerability analysis configuration')
+        # JSON output exits zero even for findings; inspect the actual package traces.
+        linked = [m['finding']['osv'] for m in messages if 'finding' in m
+                  and any(frame.get('package') for frame in m['finding'].get('trace', []))]
+        if linked:
+            raise RuntimeError('Go binary contains vulnerable packages: ' + ', '.join(sorted(set(linked))))
+        advisory = next((m['osv'] for m in messages if m.get('osv', {}).get('id') == 'GO-2026-5932'), {})
+        affected = advisory.get('affected', [])
+        imports = [p['path'] for a in affected for p in a.get('ecosystem_specific', {}).get('imports', [])]
+        if (not imports or any(not p.startswith('golang.org/x/crypto/openpgp') for p in imports)
+                or any(a.get('package', {}).get('name') != 'golang.org/x/crypto' for a in affected)):
+            raise RuntimeError('Go advisory scope changed or could not be verified')
+        proof = {'status': 'not_affected', 'justification': 'vulnerable_code_not_present',
+                 'vulnerability': 'GO-2026-5932', 'image_id': image_id, 'binary_sha256': fingerprint,
+                 'crypto_version': version, 'scanner_image_id': tool_id,
+                 'verified_at_utc': datetime.now(timezone.utc).isoformat(),
+                 'evidence': str(destination), 'affected_packages': imports,
+                 'reason': 'Compiler dependency inventory and fresh binary analysis confirm OpenPGP packages are absent.'}
+        (destination / 'proof.json').write_text(json.dumps(proof, indent=2) + '\n')
+        return proof
+
+
 def trivy_scan(source, report, *, image=False):
+    if image:
+        source = run(['docker', 'image', 'inspect', '--format', '{{.Id}}', source], capture=True).stdout.strip()
+        if not re.fullmatch(r'sha256:[a-f0-9]{64}', source):
+            raise RuntimeError('Image scan requires an immutable local image')
     args = [TOOLS / 'trivy', 'image' if image else 'fs', '--scanners',
             'vuln,secret' if image else 'vuln,misconfig,secret', '--severity', SEVERITIES,
             '--ignore-unfixed=false', '--config', ROOT / 'security/trivy.yaml',
@@ -150,12 +271,35 @@ def trivy_scan(source, report, *, image=False):
     for result in data.get('Results', []):
         target = result['Target']
         for item in result.get('Vulnerabilities', []):
+            if item['VulnerabilityID'] == 'GO-2026-5932' and item['PkgName'] == 'golang.org/x/crypto':
+                destination = report.parent / (report.stem + '-go-' + hashlib.sha256(target.encode()).hexdigest()[:12])
+                if image and result.get('Type') == 'gobinary':
+                    proof = verify_openpgp_absent(source, '/' + target.lstrip('/'), item['InstalledVersion'], destination)
+                elif not image and result.get('Type') == 'gomod':
+                    context = str(Path(target).parent)
+                    declaration = next((i for i in read_json(Path(source) / 'security/project.json')['images']
+                                        if i.get('go_binary') and i['context'] == context), None)
+                    if not declaration:
+                        raise RuntimeError('Go module finding has no declared binary package verification')
+                    tag = f'boxeu-security/go-proof:{os.getpid()}'
+                    try:
+                        build_image(Path(source), declaration, tag)
+                        proof = verify_openpgp_absent(tag, declaration['go_binary'], item['InstalledVersion'], destination)
+                    finally:
+                        run(['docker', 'image', 'rm', tag], capture=True, accepted=(0, 1))
+                else:
+                    proof = None
+                if proof:
+                    item['BoxEUAnalysis'] = proof
+                    print(f'  VERIFIED NOT AFFECTED {item["VulnerabilityID"]}: OpenPGP packages absent; evidence {destination}')
+                    continue
             count += 1
             print(f'  {item["Severity"]} {item["VulnerabilityID"]} {item["PkgName"]} '
                   f'{item["InstalledVersion"]} -> {item.get("FixedVersion") or "no fix published"}')
         for item in result.get('Misconfigurations', []) + result.get('Secrets', []):
             count += 1
             print(f'  {item["Severity"]} {item.get("ID", item.get("RuleID", "SECRET"))} {target}')
+    report.write_text(json.dumps(data, indent=2) + '\n')
     return count
 
 
@@ -258,12 +402,7 @@ def scan(spec, *, revision=None, source_only=False):
                 tag = f'boxeu-security/{ROOT.name}:{os.getpid()}-{index}'
                 try:
                     print(f'Building and scanning {image["name"]} image...', flush=True)
-                    args = ['docker', 'build', '--pull', '--platform=linux/amd64', '--tag', tag,
-                            '--file', source / image['dockerfile']]
-                    for key, value in image.get('build_args', {}).items():
-                        args += ['--build-arg', f'{key}={value}']
-                    args += [source / image['context']]
-                    run(args)
+                    build_image(source, image, tag)
                     total += trivy_scan(tag, report / f'image-{index}.json', image=True)
                     images_completed += 1
                     image_reports.append(f'image-{index}.json')

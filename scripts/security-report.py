@@ -49,6 +49,11 @@ def describe(root):
             for result in load(path).get('Results', []):
                 target = result['Target']
                 for item in result.get('Vulnerabilities', []):
+                    if item.get('BoxEUAnalysis', {}).get('status') == 'not_affected':
+                        rows.append(('NOT_AFFECTED', item['VulnerabilityID'], item['PkgName'],
+                                     item['InstalledVersion'], item['BoxEUAnalysis']['reason'],
+                                     item['BoxEUAnalysis']['evidence']))
+                        continue
                     rows.append((item['Severity'], item['VulnerabilityID'], item['PkgName'],
                                  item['InstalledVersion'], item.get('FixedVersion') or 'NO PUBLISHED FIX', target))
                 for item in result.get('Misconfigurations', []):
@@ -68,7 +73,7 @@ def describe(root):
                              f'{item["path"]}:{item["start"]["line"]}'))
         for error in data['scan_errors']:
             rows.append(('HIGH', 'SCAN ERROR', error, '', 'repair and rescan', 'scanner'))
-        lines.append('  Severity occurrences: ' + ', '.join(f'{k}={v}' for k, v in Counter(r[0] for r in rows).items()))
+        lines.append('  Severity/status occurrences: ' + (', '.join(f'{k}={v}' for k, v in Counter(r[0] for r in rows).items()) or 'none'))
         return lines, sorted(set(rows), key=lambda r: (PRIORITY.get(r[0], 9), r[2], r[1], r[5]))
 
 
@@ -79,6 +84,7 @@ roots = [ROOT.parent / name for name in REPOSITORIES if (ROOT.parent / name / '.
 lines = ['BoxEU security findings', '',
          'This report records completed scans; check the timestamp before relying on it.',
          'All severities, unfixed advisories and scanner failures remain blocking.',
+         'NOT_AFFECTED requires fresh evidence that the advisory packages are absent from the exact scanned binary.',
          'Repeated advisories in different packages/images are separate recorded occurrences.', '']
 details = []
 for root in roots:

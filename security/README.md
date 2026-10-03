@@ -13,7 +13,7 @@ python3 scripts/security-check.py scan
 python3 scripts/security-report.py
 ```
 
-`--source-only` checks dependency locks, configuration, source code, tracked/unignored files and complete reachable Git history. The full command additionally builds and scans the Linux amd64 images declared in `project.json` and generates CycloneDX SBOMs.
+`--source-only` checks dependency locks, configuration, source code, tracked/unignored files and complete reachable Git history. A Go module advisory may additionally require its declared image to establish package applicability. The full command builds and scans all Linux amd64 images declared in `project.json` and generates CycloneDX SBOMs.
 
 The pre-commit hook inspects the actual Git index for credentials. The pre-push hook reads every outgoing ref from Git, exports each distinct commit into a temporary directory and scans that exact commit, its reachable history and its built images. Unstaged or newer working-tree edits cannot hide a problem in an outgoing commit. Branch and tag deletion performs no code publication. Existing unrelated hooks are never replaced automatically.
 
@@ -45,6 +45,8 @@ Git hooks can be bypassed and are not a server trust boundary. Enable the reposi
 ## Handling findings
 
 Read the local report, verify applicability and update to a compatible fixed release or correct the implementation. Fix a false positive at its precise source when practical. Do not add inline scanner exclusions, ignore files or a global CVE baseline to obtain a green build. Any future exception mechanism requires a separate reviewed decision with exact scope, owner, rationale and expiration.
+
+For `GO-2026-5932` only, the affected deprecated OpenPGP packages can be absent even when the Go crypto module is present. The gate retains the original finding and records `NOT_AFFECTED` only after fresh verification of the exact immutable image: a compiler dependency receipt bound to the binary SHA-256, an independently extracted binary inventory, and pinned Govulncheck package analysis against the current Go advisory database. If the package is present, the receipt is missing/mismatched, analysis fails, another linked vulnerability exists, or the advisory scope changes, the gate blocks. Evidence is regenerated for each scan; no user-supplied exclusion or previous proof is trusted.
 
 Trivy covers known dependency/OS vulnerabilities, supported configuration formats and credential patterns. Gitleaks additionally covers Git history. The vendored Semgrep rules cover selected injection, TLS, deserialization, cryptography and browser risks. Trivy does not analyze ordinary Docker Compose security semantics; review Compose isolation, mounted-file permissions and application authorization separately. Static scans do not prove business authorization, tenant isolation, runtime configuration or the absence of unknown vulnerabilities.
 

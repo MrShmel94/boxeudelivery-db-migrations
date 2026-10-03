@@ -65,5 +65,9 @@
         "325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6"
       ]
     }
+  },
+  "govulncheck": {
+    "version": "1.8.0",
+    "dockerfile_sha256": "cd1fece482202034a3a72a185dfba0eeea3969b62c60ade735566571dbfea48f"
   }
 }

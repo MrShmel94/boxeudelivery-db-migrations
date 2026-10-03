@@ -1,0 +1,26 @@
+{
+  "repository": "https://github.com/semgrep/semgrep-rules",
+  "commit": "311ca4e9ba59d700624539bf658e3d29b134ee77",
+  "paths": [
+    "java/spring/security/injection/tainted-system-command.yaml",
+    "java/spring/security/injection/tainted-sql-string.yaml",
+    "java/spring/security/injection/tainted-file-path.yaml",
+    "java/spring/security/injection/tainted-url-host.yaml",
+    "java/spring/security/injection/tainted-html-string.yaml",
+    "java/lang/security/audit/crypto/ssl/insecure-hostname-verifier.yaml",
+    "java/lang/security/audit/crypto/ssl/insecure-trust-manager.yaml",
+    "java/lang/security/audit/crypto/ecb-cipher.yaml",
+    "java/lang/security/audit/crypto/weak-rsa.yaml",
+    "java/lang/security/audit/md5-used-as-password.yaml",
+    "java/lang/security/audit/object-deserialization.yaml",
+    "java/lang/security/audit/permissive-cors.yaml",
+    "java/lang/security/audit/xxe/documentbuilderfactory-external-general-entities-true.yaml",
+    "java/lang/security/audit/xxe/documentbuilderfactory-external-parameter-entities-true.yaml",
+    "javascript/lang/security/detect-eval-with-expression.yaml",
+    "javascript/lang/security/audit/dangerous-spawn-shell.yaml",
+    "javascript/lang/security/audit/prototype-pollution/prototype-pollution-assignment.yaml",
+    "typescript/react/security/audit/react-dangerouslysetinnerhtml.yaml",
+    "typescript/react/security/audit/react-jwt-in-localstorage.yaml",
+    "typescript/react/security/react-insecure-request.yaml"
+  ]
+}

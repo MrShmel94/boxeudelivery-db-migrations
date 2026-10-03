@@ -1,0 +1,13 @@
+# Security policy and publication changes require owner review where branch rules are available.
+/security/ @MrShmel94
+/scripts/security-check.py @MrShmel94
+/.githooks/ @MrShmel94
+/.github/ @MrShmel94
+/Dockerfile* @MrShmel94
+/build.gradle @MrShmel94
+/gradle/ @MrShmel94
+/gradle.lockfile @MrShmel94
+/package.json @MrShmel94
+/*lock* @MrShmel94
+/compose*.yaml @MrShmel94
+/scripts/security-report.py @MrShmel94

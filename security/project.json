@@ -1,0 +1,10 @@
+{
+  "dependency_files": [],
+  "images": [
+    {
+      "dockerfile": "Dockerfile",
+      "context": ".",
+      "name": "crm-migrations"
+    }
+  ]
+}

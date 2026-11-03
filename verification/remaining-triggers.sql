@@ -18,6 +18,7 @@ SELECT pg_temp.verify((SELECT array_agg(c.relname || ':' || t.tgname ORDER BY c.
     'border_tariff_category:website_catalog_changed',
     'border_tariff_category_group:website_catalog_changed',
     'border_tariff_subcategory:website_catalog_changed',
+    'cargo_item:sales_stock_exclusive',
     'cargo_item:trg_cargo_item_supplier_provenance',
     'cargo_item:website_catalog_changed',
     'cargo_item:website_stock_eligibility_changed',
@@ -25,12 +26,15 @@ SELECT pg_temp.verify((SELECT array_agg(c.relname || ':' || t.tgname ORDER BY c.
     'cargo_item_photo:trg_cargo_photo_owner',
     'cargo_item_photo:website_catalog_changed',
     'cargo_item_photo_object:website_catalog_changed',
+    'customer_order_line:sales_stock_exclusive',
     'customer_order_line:website_catalog_changed',
     'inbound_delivery:website_stock_eligibility_changed',
     'inbound_delivery_line:trg_inbound_delivery_line_legacy_attributes',
     'mini_supplier_intake:website_stock_eligibility_changed',
     'mini_supplier_intake_item:website_stock_eligibility_changed',
     'product_brand:website_catalog_brand_changed',
+    'sales_request_line:sales_paid_composition_guard',
+    'settlement_money_operation:sales_prepayment_retention',
     'supplier_goods_entry:supplier_goods_article_number',
     'supplier_goods_entry:website_catalog_brand_changed',
     'supplier_goods_entry:website_catalog_changed',
@@ -38,8 +42,28 @@ SELECT pg_temp.verify((SELECT array_agg(c.relname || ':' || t.tgname ORDER BY c.
     'supplier_goods_variant:website_catalog_changed',
     'task:trg_task_subcategory_usage',
     'warehouse_relocation:website_stock_eligibility_changed',
+    'warehouse_relocation_item:sales_stock_exclusive',
     'warehouse_relocation_item:website_stock_eligibility_changed',
-    'website_catalog_revision:website_catalog_notify'], 'all active CRM triggers have scenarios');
+    'website_catalog_revision:website_catalog_notify',
+    'website_store_settings:website_store_settings_changed'], 'all active CRM triggers have scenarios');
+
+BEGIN;
+SELECT txid_current() AS store_settings_transaction \gset
+INSERT INTO crm.website_store_settings(project_id,version,pickup_enabled,city,address,opening_hours,pickup_fee,updated_at)
+VALUES('11111111-1111-4111-8111-111111111111',1,true,'Test city','Test address','Daily',0,now());
+SELECT pg_temp.verify(EXISTS(SELECT 1 FROM crm.website_catalog_revision WHERE project_id='11111111-1111-4111-8111-111111111111' AND transaction_id=txid_current()), 'pickup settings insertion publishes a project revision');
+UPDATE crm.website_store_settings SET pickup_fee=250,version=2 WHERE project_id='11111111-1111-4111-8111-111111111111';
+SELECT pg_temp.verify((SELECT count(*)=1 FROM crm.website_catalog_revision WHERE project_id='11111111-1111-4111-8111-111111111111' AND transaction_id=txid_current()), 'pickup changes coalesce within the transaction');
+DO $$ BEGIN
+    BEGIN
+        UPDATE crm.website_store_settings SET address=NULL WHERE project_id='11111111-1111-4111-8111-111111111111';
+        RAISE EXCEPTION 'Enabled pickup accepted a missing address';
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+END $$;
+ROLLBACK;
+SELECT pg_temp.verify(NOT EXISTS(SELECT 1 FROM crm.website_catalog_revision WHERE transaction_id=:'store_settings_transaction'::BIGINT), 'rolled back pickup settings do not publish');
+SELECT pg_temp.verify(NOT EXISTS(SELECT 1 FROM crm.website_store_settings), 'pickup settings rollback preserves the initial state');
 
 BEGIN;
 DO $$
@@ -266,3 +290,179 @@ BEGIN
         PERFORM pg_temp.verify(crm.valid_goods_website_badges(valid),'compatible label value accepted');
     END LOOP;
 END $$;
+
+BEGIN;
+DO $$
+DECLARE
+    request_id UUID := gen_random_uuid();
+    first_line UUID := gen_random_uuid();
+    second_line UUID := gen_random_uuid();
+    stock UUID := gen_random_uuid();
+    expected UUID := gen_random_uuid();
+    stock_unit UUID := gen_random_uuid();
+    expected_unit UUID := gen_random_uuid();
+    assignment_id UUID := gen_random_uuid();
+    order_id UUID := gen_random_uuid();
+    order_line_id UUID := gen_random_uuid();
+    destination UUID := gen_random_uuid();
+    relocation_id UUID := gen_random_uuid();
+    project UUID := '11111111-1111-4111-8111-111111111111';
+    supplier UUID := '22222222-2222-4222-8222-222222222222';
+    actor UUID := '77777777-7777-4777-8777-777777777777';
+    warehouse UUID := '18181818-1818-4818-8818-181818181818';
+BEGIN
+    INSERT INTO crm.sales_request(id,request_number,project_id,client_request_id,intake_fingerprint,customer_name,customer_phone,
+        receipt_preference,status_code,manager_account_id,agreed_terms,terms_agreed_at,created_by_subject,updated_by_subject,created_at,updated_at)
+    VALUES(request_id,'SALE-VERIFY',project,gen_random_uuid(),repeat('a',64),'Synthetic customer','+79990000000',
+        'TOGETHER','AWAITING_PREPAYMENT',actor,'Agreed',now(),'verification','verification',now(),now());
+    INSERT INTO crm.sales_request_line(id,sales_request_id,project_id,sequence_number,product_name,quantity,attributes,unit_price,currency_code,required_prepayment)
+    VALUES(first_line,request_id,project,1,'Ready unit',1,'[]',100,'RUB',50),
+        (second_line,request_id,project,2,'Expected unit',1,'[]',100,'RUB',50);
+    INSERT INTO crm.cargo_item(id,project_id,supplier_goods_entry_id,supplier_goods_variant_id,supplier_id,origin_code,status_code,
+        created_by_subject,updated_by_subject,label_code,label_source_code,label_symbology_code,current_warehouse_id,accepted_by_account_id,accepted_at)
+    VALUES(stock,project,'33333333-3333-4333-8333-333333333333','44444444-4444-4444-8444-444444444444',supplier,'SUPPLIER','AVAILABLE',
+        'verification','verification','SALE-'||stock::text,'EXTERNAL_SCAN','QR_CODE',warehouse,actor,now());
+    BEGIN
+        UPDATE crm.cargo_item SET sales_request_line_id=first_line WHERE id=stock;
+        RAISE EXCEPTION 'Unpaid reservation accepted';
+    EXCEPTION WHEN check_violation THEN NULL; END;
+    INSERT INTO crm.sales_request_line(id,sales_request_id,project_id,sequence_number,product_name,quantity,attributes)
+    VALUES(gen_random_uuid(),request_id,project,3,'Draft edit verification',1,'[]');
+    UPDATE crm.sales_request_line SET product_name='Revised before payment' WHERE sales_request_id=request_id AND sequence_number=3;
+    DELETE FROM crm.sales_request_line WHERE sales_request_id=request_id AND sequence_number=3;
+    BEGIN
+        UPDATE crm.sales_request_line SET id=gen_random_uuid() WHERE id=first_line;
+        RAISE EXCEPTION 'Sales line identity was changed';
+    EXCEPTION WHEN check_violation THEN NULL; END;
+    BEGIN
+        UPDATE crm.sales_request_line SET sales_request_id=gen_random_uuid() WHERE id=first_line;
+        RAISE EXCEPTION 'Sales line was moved between requests';
+    EXCEPTION WHEN check_violation THEN NULL; END;
+    UPDATE crm.sales_request SET status_code='PAID',payment_confirmed_at=now() WHERE id=request_id;
+    BEGIN
+        UPDATE crm.sales_request_line SET quantity=quantity+1 WHERE id=first_line;
+        RAISE EXCEPTION 'Paid composition update was accepted';
+    EXCEPTION WHEN check_violation THEN NULL; END;
+    BEGIN
+        DELETE FROM crm.sales_request_line WHERE id=first_line;
+        RAISE EXCEPTION 'Paid composition delete was accepted';
+    EXCEPTION WHEN check_violation THEN NULL; END;
+    BEGIN
+        INSERT INTO crm.sales_request_line(id,sales_request_id,project_id,sequence_number,product_name,quantity,attributes)
+        VALUES(gen_random_uuid(),request_id,project,3,'Forbidden paid addition',1,'[]');
+        RAISE EXCEPTION 'Paid composition insertion was accepted';
+    EXCEPTION WHEN check_violation THEN NULL; END;
+    PERFORM pg_temp.verify(TRUE,'composition insert/update/delete allowed before payment and rejected after confirmation');
+
+    UPDATE crm.cargo_item SET sales_request_line_id=first_line WHERE id=stock;
+    INSERT INTO crm.cargo_sales_unit(id,project_id,sales_request_id,sales_request_line_id,cargo_item_id,unit_number,
+        unit_price,currency_code,prepayment_amount,product_confirmation,reserved_at,received_at,received_warehouse_id)
+    VALUES(stock_unit,project,request_id,first_line,stock,1,100,'RUB',50,'Confirmed',now(),now(),warehouse);
+    PERFORM pg_temp.verify(EXISTS(SELECT 1 FROM crm.website_catalog_revision WHERE project_id=project AND transaction_id=txid_current()),'sales reservation invalidates the public free-stock revision');
+    BEGIN
+        INSERT INTO crm.customer_order_line(id,customer_order_id,project_id,cargo_item_id,sequence_number,status_code,
+            unit_price,currency_code,price_source_code,created_by_subject,updated_by_subject)
+        VALUES(gen_random_uuid(),'14141414-1414-4414-8414-141414141414',project,stock,991,'DRAFT',100,'RUB','ORDER_ENTRY','verification','verification');
+        RAISE EXCEPTION 'Ordinary order stole sales stock';
+    EXCEPTION WHEN check_violation THEN NULL; END;
+    INSERT INTO crm.warehouse(id,name,location_description,created_by_subject,updated_by_subject)
+    VALUES(destination,'Sales verification destination','Synthetic','verification','verification');
+    INSERT INTO crm.project_warehouse(project_id,warehouse_id,assigned_by_subject) VALUES(project,destination,'verification');
+    INSERT INTO crm.warehouse_relocation(id,client_request_id,relocation_number,project_id,source_warehouse_id,
+        destination_warehouse_id,status_code,created_by_account_id,created_by_subject,updated_by_subject)
+    VALUES(relocation_id,gen_random_uuid(),'REL-2026-888887',project,warehouse,destination,'DRAFT',actor,'verification','verification');
+    BEGIN
+        INSERT INTO crm.warehouse_relocation_item(relocation_id,cargo_item_id,project_id,source_warehouse_id,destination_warehouse_id,label_code_snapshot,sequence_number)
+        VALUES(relocation_id,stock,project,warehouse,destination,'SALE-'||stock::text,1);
+        RAISE EXCEPTION 'Relocation stole sales stock';
+    EXCEPTION WHEN check_violation THEN NULL; END;
+    INSERT INTO crm.sales_sourcing_assignment(id,project_id,sales_request_id,sales_request_line_id,quantity,supplier_id,warehouse_id,
+        supplier_terms,supplier_unit_amount,supplier_currency_code,deadline_at,status_code,created_by_subject,updated_by_subject,created_at,updated_at)
+    VALUES(assignment_id,project,request_id,second_line,1,supplier,warehouse,'Supplier terms',20,'RUB',now()+interval '1 day','ACCEPTED','verification','verification',now(),now());
+    INSERT INTO crm.cargo_item(id,project_id,supplier_goods_entry_id,supplier_goods_variant_id,supplier_id,origin_code,status_code,
+        created_by_subject,updated_by_subject,sales_request_line_id)
+    VALUES(expected,project,'33333333-3333-4333-8333-333333333333','44444444-4444-4444-8444-444444444444',supplier,'SUPPLIER','IN_TRANSIT_TO_WAREHOUSE','verification','verification',second_line);
+    INSERT INTO crm.cargo_sales_unit(id,project_id,sales_request_id,sales_request_line_id,cargo_item_id,unit_number,
+        sourcing_assignment_id,unit_price,currency_code,prepayment_amount,product_confirmation,reserved_at)
+    VALUES(expected_unit,project,request_id,second_line,expected,1,assignment_id,100,'RUB',50,'Confirmed',now());
+    PERFORM pg_temp.verify(crm.sales_request_stage(request_id)='SOURCING','expected physical units never become ready stock');
+    UPDATE crm.cargo_item SET status_code='AVAILABLE',current_warehouse_id=warehouse,accepted_at=now(),accepted_by_account_id=actor,
+        label_code='SALE-'||expected::text,label_source_code='EXTERNAL_SCAN',label_symbology_code='QR_CODE' WHERE id=expected;
+    PERFORM pg_temp.verify((SELECT received_at IS NOT NULL AND received_warehouse_id=warehouse FROM crm.cargo_sales_unit WHERE id=expected_unit),'ordinary warehouse receipt retains the sourcing evidence');
+    PERFORM pg_temp.verify(crm.sales_request_stage(request_id)='READY_FOR_HANDOVER','together receipt waits until the full composition is accepted');
+    INSERT INTO crm.customer_order SELECT (jsonb_populate_record(NULL::crm.customer_order,
+        to_jsonb(template)||jsonb_build_object('id',order_id,'order_number','ORD-2026-888887','sales_request_id',request_id))).*
+        FROM crm.customer_order template WHERE id='14141414-1414-4414-8414-141414141414';
+    UPDATE crm.cargo_item SET sales_request_line_id=NULL WHERE id=stock;
+    INSERT INTO crm.customer_order_line(id,customer_order_id,project_id,cargo_item_id,sequence_number,status_code,
+        unit_price,currency_code,price_source_code,created_by_subject,updated_by_subject)
+    VALUES(order_line_id,order_id,project,stock,1,'DRAFT',100,'RUB','ORDER_ENTRY','verification','verification');
+    UPDATE crm.cargo_sales_unit SET customer_order_id=order_id,customer_order_line_id=order_line_id,supplier_amount=20,supplier_currency_code='RUB' WHERE id=stock_unit;
+    PERFORM pg_temp.verify((SELECT reserved_amount=50 FROM crm.sales_prepayment_commitment WHERE sales_request_id=request_id AND currency_code='RUB'),'issuing one order preserves the minimum prepayment for the remaining goods');
+    PERFORM pg_temp.verify((SELECT unit_price=20 FROM crm.supplier_order_financial_line WHERE id=order_line_id),'supplier financial projection uses the agreed supplier amount');
+    PERFORM pg_temp.verify((SELECT unit_price=100 FROM crm.customer_order_line WHERE id=order_line_id),'supplier terms never overwrite the customer selling price');
+    PERFORM pg_temp.verify((SELECT COUNT(*)=0 FROM crm.cargo_item item WHERE item.id=stock AND item.sales_request_line_id IS NULL
+        AND NOT EXISTS(SELECT 1 FROM crm.customer_order_line line WHERE line.cargo_item_id=item.id AND line.status_code<>'REMOVED')),'order conversion retains free-stock exclusion');
+END $$;
+ROLLBACK;
+
+BEGIN;
+DO $$
+DECLARE
+    project UUID := '11111111-1111-4111-8111-111111111111';
+    request_id UUID := gen_random_uuid();
+    account_id UUID := gen_random_uuid();
+    advance_id UUID := gen_random_uuid();
+    retention_id UUID := gen_random_uuid();
+BEGIN
+    INSERT INTO crm.sales_request(id,request_number,project_id,client_request_id,intake_fingerprint,
+        customer_name,customer_phone,receipt_preference,status_code,payment_confirmed_at,
+        created_by_subject,updated_by_subject,created_at,updated_at)
+    VALUES(request_id,'SAL-2026-888886',project,gen_random_uuid(),repeat('d',64),
+        'Retention verification','+10000000000','TOGETHER','PAID',now(),
+        'verification','verification',now(),now());
+    INSERT INTO crm.settlement_financial_account(id,account_type,display_name,currency_code,
+        created_by_subject,updated_by_subject)
+    VALUES(account_id,'COMPANY_BANK','Retention verification','RUB','verification','verification');
+    INSERT INTO crm.settlement_money_operation(id,client_operation_id,operation_type,project_id,sales_request_id,
+        financial_account_id,payment_method,amount,currency_code,occurred_at,confirmed_at,
+        created_by_subject,confirmed_by_subject)
+    VALUES(advance_id,gen_random_uuid(),'SALES_ADVANCE',project,request_id,account_id,'BANK_TRANSFER',600,
+        'RUB',now(),now(),'verification','verification');
+    INSERT INTO crm.settlement_money_account_posting(operation_id,financial_account_id,currency_code,amount_delta,occurred_at)
+    VALUES(advance_id,account_id,'RUB',600,now());
+    BEGIN
+        INSERT INTO crm.settlement_money_operation(id,client_operation_id,operation_type,project_id,sales_request_id,
+            amount,currency_code,reason,occurred_at,confirmed_at,created_by_subject,confirmed_by_subject)
+        VALUES(gen_random_uuid(),gen_random_uuid(),'SALES_PREPAYMENT_RETAINED',project,request_id,
+            400,'RUB','Cancellation retention',now(),now(),'verification','verification');
+        RAISE EXCEPTION 'Active request accepted prepayment retention';
+    EXCEPTION WHEN check_violation THEN NULL; END;
+    UPDATE crm.sales_request SET status_code='CANCELLED',cancelled_at=now(),cancellation_reason='Cancellation verification'
+        WHERE id=request_id;
+    BEGIN
+        INSERT INTO crm.settlement_money_operation(id,client_operation_id,operation_type,project_id,sales_request_id,
+            amount,currency_code,reason,occurred_at,confirmed_at,created_by_subject,confirmed_by_subject)
+        VALUES(gen_random_uuid(),gen_random_uuid(),'SALES_PREPAYMENT_RETAINED',project,request_id,
+            601,'RUB','Excess retention',now(),now(),'verification','verification');
+        RAISE EXCEPTION 'Retention exceeded received unallocated money';
+    EXCEPTION WHEN check_violation THEN NULL; END;
+    INSERT INTO crm.settlement_money_operation(id,client_operation_id,operation_type,project_id,sales_request_id,
+        amount,currency_code,reason,occurred_at,confirmed_at,created_by_subject,confirmed_by_subject)
+    VALUES(retention_id,gen_random_uuid(),'SALES_PREPAYMENT_RETAINED',project,request_id,
+        400,'RUB','Agreed prepayment retained',now(),now(),'verification','verification');
+    PERFORM pg_temp.verify((SELECT sum(amount_delta)=600 FROM crm.settlement_money_account_posting
+        WHERE financial_account_id=account_id),'retention does not duplicate the original cash receipt');
+    PERFORM pg_temp.verify((SELECT sum(CASE operation_type WHEN 'SALES_ADVANCE' THEN amount
+        WHEN 'SALES_PREPAYMENT_RETAINED' THEN -amount ELSE 0 END)=200 FROM crm.settlement_money_operation
+        WHERE sales_request_id=request_id),'retention preserves the excess advance for a separate refund');
+    BEGIN
+        INSERT INTO crm.settlement_money_operation(id,client_operation_id,operation_type,project_id,sales_request_id,
+            amount,currency_code,reason,occurred_at,confirmed_at,created_by_subject,confirmed_by_subject)
+        VALUES(gen_random_uuid(),gen_random_uuid(),'SALES_PREPAYMENT_RETAINED',project,request_id,
+            1,'RUB','Duplicate retention',now(),now(),'verification','verification');
+        RAISE EXCEPTION 'Duplicate request currency retention was accepted';
+    EXCEPTION WHEN unique_violation THEN NULL; END;
+    PERFORM pg_temp.verify(TRUE,'retention requires cancelled paid state, available money and one operation per currency');
+END $$;
+ROLLBACK;

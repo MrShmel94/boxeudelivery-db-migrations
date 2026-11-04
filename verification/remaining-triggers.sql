@@ -138,8 +138,8 @@ BEGIN
     INSERT INTO crm.supplier_goods_entry(id,project_id,supplier_id,name,created_by_subject,updated_by_subject)
         VALUES(goods,source.project_id,source.supplier_id,'Article verification','verification','verification')
         RETURNING article_number INTO article;
-    PERFORM pg_temp.verify(article ~ ('^' || source.task_prefix || '-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{7}$'),
-        'goods article uses project prefix and seven random characters');
+    PERFORM pg_temp.verify(article ~ ('^' || source.task_prefix || '-[1-9][0-9]{5}$'),
+        'goods article uses project task prefix and six random digits');
     UPDATE crm.supplier_goods_entry SET article_number=article_number,name='Renamed article verification' WHERE id=goods;
     PERFORM pg_temp.verify((SELECT article_number=article FROM crm.supplier_goods_entry WHERE id=goods),
         'ordinary edits and no-op article updates preserve the number');
